@@ -1,5 +1,6 @@
 import html
 import io
+import os
 import unicodedata
 from pathlib import Path
 
@@ -35,10 +36,19 @@ ONEDRIVE_URLS = {
     "centro": "https://empresassk-my.sharepoint.com/:x:/g/personal/rodrigo_dallaserra_enaex_com/IQB6Ny2KoGQURp6nWehTspgGAfwNUsxEcW4xzfszzAfUtAM?e=Y0aQsB&download=1"
 }
 
-# Carpeta data/ ubicada junto a este archivo (funciona sin importar desde dónde se ejecute)
-DATA_DIR = Path(__file__).resolve().parent / "data"
+# Versión visible en la barra lateral: sirve para confirmar que Streamlit ejecuta este código
+APP_VERSION = "v3 - búsqueda flexible de data/"
 
-# Nombres reales de los archivos en data/. La búsqueda ignora mayúsculas/minúsculas,
+# Carpetas base donde buscar: la del propio app.py y la carpeta desde donde se ejecuta
+BASE_DIRS = []
+for _b in (Path(__file__).resolve().parent, Path.cwd().resolve()):
+    if _b not in BASE_DIRS:
+        BASE_DIRS.append(_b)
+
+EXTENSIONES_EXCEL = (".xlsx", ".xlsm", ".xls")
+CARPETAS_IGNORADAS = {".git", ".venv", "venv", "env", "__pycache__", "node_modules", ".streamlit"}
+
+# Nombres reales de los archivos. La búsqueda ignora mayúsculas/minúsculas,
 # así que "ME2M.XLSX" y "ME2M.xlsx" se reconocen igual.
 LOCAL_FILES = {
     "me2m": "ME2M.xlsx",
@@ -47,7 +57,7 @@ LOCAL_FILES = {
     "centro": "CENTRO_SOCIEDAD Compras MRO.xlsx"
 }
 
-# Palabras clave de respaldo por si el nombre exacto cambia (p. ej. "Grupo_Compras_v2.xlsx")
+# Palabras clave de respaldo por si el nombre exacto cambia
 LOCAL_KEYWORDS = {
     "me2m": ["me2m"],
     "me80fn": ["me80fn"],
@@ -56,12 +66,35 @@ LOCAL_KEYWORDS = {
 }
 
 
-def resolver_archivo_local(clave):
-    """Busca el archivo en data/ sin distinguir mayúsculas/minúsculas.
+def listar_excels_locales(profundidad_max=3):
+    """Recorre el repositorio (hasta 3 niveles) y devuelve todos los Excel encontrados.
+    Los que están dentro de una carpeta llamada data (cualquier mayúscula) van primero."""
+    encontrados = []
+    vistos = set()
+    for base in BASE_DIRS:
+        if not base.is_dir():
+            continue
+        for raiz, carpetas, archivos in os.walk(base, onerror=lambda e: None):
+            nivel = len(Path(raiz).relative_to(base).parts)
+            # No entrar a carpetas ignoradas ni bajar más de la profundidad máxima
+            carpetas[:] = [c for c in carpetas if c not in CARPETAS_IGNORADAS and nivel < profundidad_max]
+            for nombre in archivos:
+                if nombre.startswith("~$") or Path(nombre).suffix.lower() not in EXTENSIONES_EXCEL:
+                    continue
+                real = (Path(raiz) / nombre).resolve()
+                if real not in vistos:
+                    vistos.add(real)
+                    encontrados.append(real)
+    # Prioridad: archivos dentro de una carpeta "data"
+    encontrados.sort(key=lambda f: (f.parent.name.lower() != "data", len(f.parts)))
+    return encontrados
+
+
+def resolver_archivo_local(clave, excels=None):
+    """Busca el archivo sin distinguir mayúsculas/minúsculas.
     Devuelve la ruta como texto o None si no lo encuentra."""
-    if not DATA_DIR.is_dir():
-        return None
-    excels = [f for f in DATA_DIR.iterdir() if f.is_file() and f.suffix.lower() in (".xlsx", ".xlsm", ".xls")]
+    if excels is None:
+        excels = listar_excels_locales()
 
     # 1) Coincidencia exacta del nombre, ignorando mayúsculas/minúsculas
     objetivo = LOCAL_FILES[clave].lower()
@@ -867,6 +900,7 @@ def preparar_tabla_detalle(df_mostrar):
 # BARRA LATERAL: ORIGEN DE DATOS Y FILTRO TIEMPO
 # ==========================================
 with st.sidebar:
+    st.caption(f"Versión del código: {APP_VERSION}")
     encabezado_seccion("base_datos", "Origen de datos", "Desde dónde se leen los archivos de SAP.")
     origen_datos = st.radio(
         "Selecciona el origen:",
@@ -896,24 +930,31 @@ with st.sidebar:
         file_centro = st.file_uploader("Centro y sociedad", type=["xlsx"])
 
     elif origen_datos == "Archivos locales (data/)":
-        file_me2m = resolver_archivo_local("me2m")
-        file_me80fn = resolver_archivo_local("me80fn")
-        file_grupo = resolver_archivo_local("grupo")
-        file_centro = resolver_archivo_local("centro")
+        if st.button("Volver a buscar archivos", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
-        faltantes = [
-            LOCAL_FILES[k] for k, v in {
-                "me2m": file_me2m, "me80fn": file_me80fn,
-                "grupo": file_grupo, "centro": file_centro
-            }.items() if v is None
-        ]
+        excels_locales = listar_excels_locales()
+        file_me2m = resolver_archivo_local("me2m", excels_locales)
+        file_me80fn = resolver_archivo_local("me80fn", excels_locales)
+        file_grupo = resolver_archivo_local("grupo", excels_locales)
+        file_centro = resolver_archivo_local("centro", excels_locales)
+
+        rutas = {"me2m": file_me2m, "me80fn": file_me80fn, "grupo": file_grupo, "centro": file_centro}
+        faltantes = [LOCAL_FILES[k] for k, v in rutas.items() if v is None]
+
         if faltantes:
-            st.error("No se encontraron en data/: " + ", ".join(faltantes))
-            if DATA_DIR.is_dir():
-                st.caption("Archivos presentes: " + ", ".join(sorted(f.name for f in DATA_DIR.iterdir())))
+            st.error("No se encontraron: " + ", ".join(faltantes))
+            st.caption("Carpetas revisadas: " + ", ".join(str(b) for b in BASE_DIRS))
+            if excels_locales:
+                st.caption("Excel encontrados: " + ", ".join(str(f) for f in excels_locales))
             else:
-                st.caption(f"No existe la carpeta: {DATA_DIR}")
+                st.caption("No se encontró ningún archivo Excel en el repositorio.")
             st.stop()
+        else:
+            with st.expander("Archivos usados"):
+                for k, v in rutas.items():
+                    st.caption(f"{k}: {Path(v).name}")
 
 
 # ==========================================
