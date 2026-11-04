@@ -1,6 +1,7 @@
 import html
 import io
 import unicodedata
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -34,12 +35,46 @@ ONEDRIVE_URLS = {
     "centro": "https://empresassk-my.sharepoint.com/:x:/g/personal/rodrigo_dallaserra_enaex_com/IQB6Ny2KoGQURp6nWehTspgGAfwNUsxEcW4xzfszzAfUtAM?e=Y0aQsB&download=1"
 }
 
-LOCAL_PATHS = {
-    "me2m": "data/ME2M.xlsx",
-    "me80fn": "data/ME80FN.xlsx",
-    "grupo": "data/Grupo.xlsx",
-    "centro": "data/Centro.xlsx"
+# Carpeta data/ ubicada junto a este archivo (funciona sin importar desde dónde se ejecute)
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
+# Nombres reales de los archivos en data/. La búsqueda ignora mayúsculas/minúsculas,
+# así que "ME2M.XLSX" y "ME2M.xlsx" se reconocen igual.
+LOCAL_FILES = {
+    "me2m": "ME2M.xlsx",
+    "me80fn": "ME80FN.xlsx",
+    "grupo": "Responsable_Grupo_Compras.xlsx",
+    "centro": "CENTRO_SOCIEDAD Compras MRO.xlsx"
 }
+
+# Palabras clave de respaldo por si el nombre exacto cambia (p. ej. "Grupo_Compras_v2.xlsx")
+LOCAL_KEYWORDS = {
+    "me2m": ["me2m"],
+    "me80fn": ["me80fn"],
+    "grupo": ["grupo"],
+    "centro": ["centro", "sociedad"]
+}
+
+
+def resolver_archivo_local(clave):
+    """Busca el archivo en data/ sin distinguir mayúsculas/minúsculas.
+    Devuelve la ruta como texto o None si no lo encuentra."""
+    if not DATA_DIR.is_dir():
+        return None
+    excels = [f for f in DATA_DIR.iterdir() if f.is_file() and f.suffix.lower() in (".xlsx", ".xlsm", ".xls")]
+
+    # 1) Coincidencia exacta del nombre, ignorando mayúsculas/minúsculas
+    objetivo = LOCAL_FILES[clave].lower()
+    for f in excels:
+        if f.name.lower() == objetivo:
+            return str(f)
+
+    # 2) Respaldo: el nombre contiene la palabra clave
+    for palabra in LOCAL_KEYWORDS[clave]:
+        for f in excels:
+            if palabra in f.stem.lower():
+                return str(f)
+    return None
 
 # ==========================================
 # PALETA Y ESTADOS
@@ -861,10 +896,24 @@ with st.sidebar:
         file_centro = st.file_uploader("Centro y sociedad", type=["xlsx"])
 
     elif origen_datos == "Archivos locales (data/)":
-        file_me2m = LOCAL_PATHS["me2m"]
-        file_me80fn = LOCAL_PATHS["me80fn"]
-        file_grupo = LOCAL_PATHS["grupo"]
-        file_centro = LOCAL_PATHS["centro"]
+        file_me2m = resolver_archivo_local("me2m")
+        file_me80fn = resolver_archivo_local("me80fn")
+        file_grupo = resolver_archivo_local("grupo")
+        file_centro = resolver_archivo_local("centro")
+
+        faltantes = [
+            LOCAL_FILES[k] for k, v in {
+                "me2m": file_me2m, "me80fn": file_me80fn,
+                "grupo": file_grupo, "centro": file_centro
+            }.items() if v is None
+        ]
+        if faltantes:
+            st.error("No se encontraron en data/: " + ", ".join(faltantes))
+            if DATA_DIR.is_dir():
+                st.caption("Archivos presentes: " + ", ".join(sorted(f.name for f in DATA_DIR.iterdir())))
+            else:
+                st.caption(f"No existe la carpeta: {DATA_DIR}")
+            st.stop()
 
 
 # ==========================================
